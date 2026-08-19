@@ -15,6 +15,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+	manifestPlaceholders["MAPS_API_KEY"] = (findProperty("MAPS_API_KEY") as String? ?: "")
     }
     buildTypes { release { isMinifyEnabled = false } }
     compileOptions {
