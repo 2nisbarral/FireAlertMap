@@ -22,8 +22,66 @@ import com.firealert.firealertmap.ui.theme.FireAlertMapTheme
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.google.maps.android.compose.*
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
+
+// --- NASA EONET ---
+data class NasaFire(val lat: Double, val lng: Double, val title: String)
+
+
+suspend fun fetchNasaFires(): List<NasaFire> = withContext(Dispatchers.IO) {
+    try {
+        // On prend les 30 derniers jours, ouverts ET fermés, pour avoir Grèce/Espagne/Canada
+        val url = java.net.URL("https://eonet.gsfc.nasa.gov/api/v3/events/geojson?category=wildfires&status=all&days=120&limit=500")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 15000
+        conn.setRequestProperty("User-Agent", "FireAlertMap")
+        val text = conn.inputStream.bufferedReader().readText()
+        conn.disconnect()
+
+        val json = org.json.JSONObject(text)
+        // L'API geojson met tout dans "features", pas "events"
+        val arr = json.optJSONArray("features") ?: json.optJSONArray("events") ?: org.json.JSONArray()
+        val fires = mutableListOf<NasaFire>()
+
+        for (i in 0 until arr.length()) {
+            try {
+                val obj = arr.getJSONObject(i)
+                val props = obj.optJSONObject("properties") ?: obj
+                val title = props.optString("title", "Feu NASA")
+
+                val geom = obj.optJSONObject("geometry")
+                if (geom == null) continue
+                val coords = geom.optJSONArray("coordinates") ?: continue
+                if (coords.length() == 0) continue
+
+                var lon = 0.0; var lat = 0.0
+                // Point = [lon, lat]
+                if (coords.opt(0) is Number) {
+                    lon = coords.getDouble(0); lat = coords.getDouble(1)
+                } else {
+                    // Polygon = [[[lon, lat], ...]]
+                    val ring = coords.getJSONArray(0)
+                    val point = ring.getJSONArray(0)
+                    lon = point.getDouble(0); lat = point.getDouble(1)
+                }
+                if (lat != 0.0 && lon != 0.0) {
+                    fires.add(NasaFire(lat, lon, title))
+                }
+            } catch (_: Exception) {}
+        }
+        android.util.Log.d("NASA", "NASA OK: ${fires.size} / ${arr.length()}")
+        fires
+    } catch (e: Exception) {
+        android.util.Log.e("NASA", "Erreur totale: ${e.message}")
+        e.printStackTrace()
+        emptyList()
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,6 +102,11 @@ fun FireAlertMapApp() {
     var allFiresFromFirebase by remember { mutableStateOf(listOf<FireReportLocal>()) }
     var showReportScreen by remember { mutableStateOf(false) }
     var selectedPosition by remember { mutableStateOf<LatLng?>(null) }
+    var nasaFires by remember { mutableStateOf(listOf<NasaFire>()) }
+
+    LaunchedEffect(Unit) {
+        nasaFires = fetchNasaFires()
+    }
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(44.0, 0.5), 6f)
     }
@@ -118,6 +181,15 @@ fun FireAlertMapApp() {
                     state = MarkerState(position = LatLng(fire.latitude, fire.longitude)),
                     title = "Feu signalé",
                     snippet = fire.description
+                )
+            }
+            // --- LES FEUX NASA ORANGE ---
+            nasaFires.forEach { fire ->
+                Marker(
+                    state = MarkerState(position = LatLng(fire.lat, fire.lng)),
+                    title = fire.title,
+                    snippet = "Satellite NASA",
+                    icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_ORANGE)
                 )
             }
         }
