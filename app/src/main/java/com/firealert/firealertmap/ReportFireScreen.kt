@@ -10,8 +10,8 @@ import com.google.android.gms.maps.model.LatLng
 @Composable
 fun ReportFireScreen(
     latLng: LatLng,
-    onConfirm: (String) -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onConfirm: (String) -> Unit
 ) {
     var description by remember { mutableStateOf("") }
 
