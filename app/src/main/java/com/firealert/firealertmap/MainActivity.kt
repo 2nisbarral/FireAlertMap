@@ -1,5 +1,21 @@
 package com.firealert.firealertmap
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -7,14 +23,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.firealert.firealertmap.data.FireReportLocal
@@ -31,7 +43,14 @@ import com.google.android.gms.maps.model.BitmapDescriptorFactory
 // --- NASA EONET ---
 data class NasaFire(val lat: Double, val lng: Double, val title: String)
 
-
+fun getFlameIcon(context: android.content.Context): com.google.android.gms.maps.model.BitmapDescriptor {
+    val drawable = androidx.core.content.ContextCompat.getDrawable(context, R.drawable.ic_flame)!!
+    drawable.setBounds(0, 0, 96, 96)
+    val bitmap = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    drawable.draw(canvas)
+    return com.google.android.gms.maps.model.BitmapDescriptorFactory.fromBitmap(bitmap)
+}
 suspend fun fetchNasaFires(): List<NasaFire> = withContext(Dispatchers.IO) {
     try {
         // On prend les 30 derniers jours, ouverts ET fermés, pour avoir Grèce/Espagne/Canada
@@ -98,11 +117,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun FireAlertMapApp() {
     val context = LocalContext.current
+
     var hasLocationPermission by remember { mutableStateOf(false) }
     var allFiresFromFirebase by remember { mutableStateOf(listOf<FireReportLocal>()) }
     var showReportScreen by remember { mutableStateOf(false) }
     var selectedPosition by remember { mutableStateOf<LatLng?>(null) }
     var nasaFires by remember { mutableStateOf(listOf<NasaFire>()) }
+    var selectedFire by remember { mutableStateOf<FireReportLocal?>(null) }
+    var userLocation by remember { mutableStateOf<LatLng?>(null) }
 
     LaunchedEffect(Unit) {
         nasaFires = fetchNasaFires()
@@ -113,6 +135,22 @@ fun FireAlertMapApp() {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted -> hasLocationPermission = isGranted }
+    // Demande la permission au démarrage
+    LaunchedEffect(Unit) {
+        permissionLauncher.launch(android.Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+    // Quand on a la permission, on récupère ta position
+    LaunchedEffect(hasLocationPermission) {
+        if (hasLocationPermission) {
+            try {
+                val fused = com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(context)
+                fused.lastLocation.addOnSuccessListener { loc ->
+                    if (loc != null) userLocation = LatLng(loc.latitude, loc.longitude)
+                }
+            } catch(e: Exception) {}
+        }
+    }
 
     LaunchedEffect(Unit) {
         FirebaseFirestore.getInstance().collection("fire_reports")
@@ -170,17 +208,24 @@ fun FireAlertMapApp() {
             )
         }
     ) { padding ->
-        GoogleMap(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            cameraPositionState = cameraPositionState,
-            properties = MapProperties(isMyLocationEnabled = hasLocationPermission),
-            uiSettings = MapUiSettings(myLocationButtonEnabled = true)
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding)
         ) {
+            GoogleMap(
+                modifier = Modifier.fillMaxSize(),
+                cameraPositionState = cameraPositionState,
+                properties = MapProperties(isMyLocationEnabled = hasLocationPermission),
+                uiSettings = MapUiSettings(myLocationButtonEnabled = true)
+            ) {
             allFiresFromFirebase.forEach { fire ->
                 Marker(
                     state = MarkerState(position = LatLng(fire.latitude, fire.longitude)),
-                    title = "Feu signalé",
-                    snippet = fire.description
+                    title = fire.description,
+                    icon = getFlameIcon(context),
+                    onClick = {
+                        selectedFire = fire // On ouvre la bulle
+                        false // false = on laisse la carte centrer aussi
+                    }
                 )
             }
             // --- LES FEUX NASA ORANGE ---
@@ -192,32 +237,44 @@ fun FireAlertMapApp() {
                     icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_ORANGE)
                 )
             }
-        }
-        if (showReportScreen && selectedPosition != null) {
-            AlertDialog(
-                onDismissRequest = { showReportScreen = false },
-                title = { Text("Signaler un feu") },
-                text = {
-                    ReportFireScreen(
-                        latLng = selectedPosition!!,
-                        onCancel = { showReportScreen = false },
-                        onConfirm = { desc ->
-                            // Ici tu gardes ton code qui envoie sur Firebase
-                            // que tu avais déjà dans l'ancien ReportFireScreen
-                            val data = hashMapOf(
-                                "latitude" to selectedPosition!!.latitude,
-                                "longitude" to selectedPosition!!.longitude,
-                                "description" to desc,
-                                "timestamp" to System.currentTimeMillis()
-                            )
-                            FirebaseFirestore.getInstance().collection("fire_reports").add(data)
-                            showReportScreen = false
-                        }
-                    )
-                },
-                confirmButton = {},
-                dismissButton = {}
-            )
+            }
+        } // fin forEach
+
+    } // <- CETTE ACCOLADE FERME GoogleMap
+
+// MAINTENANT la bulle, dans la Box mais hors GoogleMap
+    selectedFire?.let { fire ->
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .clickable { selectedFire = null },
+                elevation = CardDefaults.cardElevation(8.dp)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("🔥 ${fire.description}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Text("📍 Lat: ${fire.latitude}, Lng: ${fire.longitude}")
+
+                    userLocation?.let { myPos ->
+                        val km = distanceKm(myPos.latitude, myPos.longitude, fire.latitude, fire.longitude)
+                        Text("📏 Distance: ${String.format("%.2f", km)} km de toi", fontWeight = FontWeight.Bold, color = Color.Red)
+                    }?: Text("📏 Distance: localisation en cours...", color = Color.Gray)
+
+                    Spacer(Modifier.height(8.dp))
+                    Text("Touche pour fermer", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+            }
         }
     }
+}
+
+fun distanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+    val result = FloatArray(1)
+    android.location.Location.distanceBetween(lat1, lon1, lat2, lon2, result)
+    return result[0] / 1000f
 }
